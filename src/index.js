@@ -1,112 +1,115 @@
 const express = require("express");
-const app = express();
 const path = require("path");
 const bcrypt = require("bcrypt");
 const session = require("express-session");
-const db = require("./db");
+const connectToDatabase = require('./db'); 
+const app = express();
 
-app.use(express.urlencoded({ extended: false }));
-app.use(express.json());
+connectToDatabase().then(db => {
+  app.use((req, res, next) => {
+    req.db = db; 
+    next();
+  });
 
-app.set("view engine", "hbs");
-const templatePath = path.join(__dirname, "../templates");
-app.set("views", templatePath);
-app.use(express.static(path.join(__dirname, '../public')));
-app.use(session({
+  app.use(express.urlencoded({ extended: false }));
+  app.use(express.json());
+
+  app.set("view engine", "hbs");
+  const templatePath = path.join(__dirname, "../templates");
+  app.set("views", templatePath);
+  app.use(express.static(path.join(__dirname, '../public')));
+  app.use(session({
     secret: 'your_secret_key',
     resave: false,
     saveUninitialized: true,
     cookie: { secure: false } 
-}));
+  }));
 
-app.get("/", (req, res) => {
+  app.get("/", (req, res) => {
     res.render("login");
-});
+  });
 
-app.get("/signup", (req, res) => {
+  app.get("/signup", (req, res) => {
     res.render("signup");
-});
+  });
 
-app.post("/signup", async (req, res) => {
+  app.post("/signup", async (req, res) => {
     const { name, password } = req.body;
 
     if (!name || !password) {
-        return res.status(400).send("Name and password are required");
+      return res.status(400).send("Name and password are required");
     }
+
+    const db = req.db; // Access the database object from middleware
 
     try {
-        const hashedPassword = await bcrypt.hash(password, 10);
-        db.run(`INSERT INTO users (name, password) VALUES (?, ?)`, [name, hashedPassword], function (err) {
-            if (err) {
-                console.error("Error inserting data:", err);
-                return res.status(500).send("Error saving data");
-            }
-            console.log("Data inserted successfully: ", { name, hashedPassword });
-            res.render("login"); 
-        });
+      const hashedPassword = await bcrypt.hash(password, 10);
+      const collection = db.collection("users");
+      await collection.insertOne({ name, password: hashedPassword });
+      console.log("Data inserted successfully:", { name, hashedPassword });
+      res.render("login");
     } catch (error) {
-        console.error("Error during signup:", error);
-        res.status(500).send("Internal server error");
+      console.error("Error during signup:", error);
+      res.status(500).send("Internal server error");
     }
-});
+  });
 
-app.post("/login", (req, res) => {
+  app.post("/login", async (req, res) => {
     const { name, password } = req.body;
 
     if (!name || !password) {
-        return res.status(400).send("Name and password are required");
+      return res.status(400).send("Name and password are required");
     }
 
-    db.get("SELECT * FROM users WHERE name = ?", [name], async (err, user) => {
-        if (err) {
-            console.error("Error fetching user:", err);
-            return res.status(500).send("Error fetching user");
-        }
+    const db = req.db; 
 
-        if (!user) {
-            console.log("User not found:", name);
-            return res.status(400).send("Invalid username or password");
-        }
+    const collection = db.collection("users");
+    try {
+      const user = await collection.findOne({ name });
 
-        console.log("User found:", user);
+      if (!user) {
+        console.log("User not found:", name);
+        return res.status(400).send("Invalid username or password");
+      }
 
-        try {
-            const match = await bcrypt.compare(password, user.password);
-            if (!match) {
-                console.log("Password mismatch for user:", name);
-                return res.status(400).send("Invalid username or password");
-            }
+      const match = await bcrypt.compare(password, user.password);
+      if (!match) {
+        console.log("Password mismatch for user:", name);
+        return res.status(400).send("Invalid username or password");
+      }
 
-            req.session.userId = user.id;
-            res.render("home"); 
-        } catch (error) {
-            console.error("Error during login:", error);
-            res.status(500).send("Internal server error");
-        }
-    });
-});
+      req.session.userId = user._id; 
+      res.render("home");
+    } catch (error) {
+      console.error("Error during login:", error);
+      res.status(500).send("Internal server error");
+    }
+  });
 
-app.get("/logout", (req, res) => {
+  app.get("/logout", (req, res) => {
     req.session.destroy((err) => {
-        if (err) {
-            console.error("Error destroying session:", err);
-            return res.status(500).send("Error logging out");
-        }
-        res.redirect("/"); 
+      if (err) {
+        console.error("Error destroying session:", err);
+        return res.status(500).send("Error logging out");
+      }
+      res.redirect("/"); 
     });
-});
+  });
 
-function checkAuth(req, res, next) {
+  function checkAuth(req, res, next) {
     if (!req.session.userId) {
-        return res.redirect("/");
+      return res.redirect("/");
     }
     next();
-}
+  }
 
-app.get("/home", checkAuth, (req, res) => {
-    res.render("home");
-});
+  app.get("/home", checkAuth, (req, res) => {
+      res.render("home");
+  });
 
-app.listen(3000, () => {
-    console.log("Server started on port 3000");
+  app.listen(3000, () => {
+      console.log("Server started on port 3000");
+  });
+}).catch(err => {
+  console.error('Failed to connect to the database. Server not started.', err);
 });
